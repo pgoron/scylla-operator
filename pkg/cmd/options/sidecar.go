@@ -15,7 +15,8 @@ var sidecarOpts = &sidecarOptions{
 
 type sidecarOptions struct {
 	*commonOptions
-	CPU string
+	CPU      string
+	NodeName string
 }
 
 func GetSidecarOptions() *sidecarOptions {
@@ -25,6 +26,7 @@ func GetSidecarOptions() *sidecarOptions {
 func (o *sidecarOptions) AddFlags(cmd *cobra.Command) {
 	o.commonOptions.AddFlags(cmd)
 	cmd.Flags().StringVar(&o.CPU, "cpu", os.Getenv(naming.EnvVarCPU), "number of cpus to use")
+	cmd.Flags().StringVar(&o.NodeName, "node-name", os.Getenv(naming.EnvVarEnvVarNodeName), "node name where the pod is running")
 }
 
 func (o *sidecarOptions) Validate() error {

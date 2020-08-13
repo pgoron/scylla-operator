@@ -13,7 +13,7 @@ builds:
 
 dockers:
     - image_templates:
-        - 'scylladb/scylla-operator:{{ .Tag }}'
+        - 'criteord/scylla-operator:{{ .Tag }}'
       binaries:
           - scylla-operator
       skip_push: auto

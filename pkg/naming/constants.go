@@ -28,6 +28,7 @@ const (
 	ClusterNameLabel    = "scylla/cluster"
 	DatacenterNameLabel = "scylla/datacenter"
 	RackNameLabel       = "scylla/rack"
+	CriteoRackNameLabel = "kubernetes.io/crto-rack-name"
 
 	AppName         = "scylla"
 	OperatorAppName = "scylla-operator"
@@ -38,9 +39,10 @@ const (
 
 // Environment Variables
 const (
-	EnvVarEnvVarPodName = "POD_NAME"
-	EnvVarPodNamespace  = "POD_NAMESPACE"
-	EnvVarCPU           = "CPU"
+	EnvVarEnvVarNodeName = "NODE_NAME"
+	EnvVarEnvVarPodName  = "POD_NAME"
+	EnvVarPodNamespace   = "POD_NAMESPACE"
+	EnvVarCPU            = "CPU"
 )
 
 // Recorder Values

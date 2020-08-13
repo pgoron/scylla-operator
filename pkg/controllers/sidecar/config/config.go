@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io/ioutil"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"os"
 	"os/exec"
 	"strconv"
@@ -62,7 +63,7 @@ func (s *ScyllaConfig) Setup(ctx context.Context) (*exec.Cmd, error) {
 		return nil, errors.Wrap(err, "failed to setup scylla.yaml")
 	}
 	s.logger.Info(ctx, "Setting up cassandra-rackdc.properties")
-	if err = s.setupRackDCProperties(); err != nil {
+	if err = s.setupRackDCProperties(ctx); err != nil {
 		return nil, errors.Wrap(err, "failed to setup rackdc properties file")
 	}
 	s.logger.Info(ctx, "Setting up entrypoint script")
@@ -120,9 +121,14 @@ func (s *ScyllaConfig) setupScyllaYAML() error {
 	return nil
 }
 
-func (s *ScyllaConfig) setupRackDCProperties() error {
+func (s *ScyllaConfig) setupRackDCProperties(ctx context.Context) error {
 	suppliedProperties := loadProperties(s.scyllaRackDCPropertiesConfigMapPath, s.logger)
-	rackDCProperties := createRackDCProperties(suppliedProperties, s.member.Datacenter, s.member.Rack)
+
+	node, err := s.kubeClient.CoreV1().Nodes().Get(ctx, options.GetSidecarOptions().NodeName, metav1.GetOptions{})
+	if err != nil {
+		s.logger.Info(ctx, err.Error())
+	}
+	rackDCProperties := createRackDCProperties(suppliedProperties, s.member.Datacenter, node.Labels[naming.CriteoRackNameLabel])
 	f, err := os.Create(s.scyllaRackDCPropertiesPath)
 	if err != nil {
 		return errors.Wrap(err, "error trying to create cassandra-rackdc.properties")
