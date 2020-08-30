@@ -29,20 +29,6 @@ type Member struct {
 }
 
 func Retrieve(ctx context.Context, name, namespace string, kubeclient kubernetes.Interface) (*Member, error) {
-	// Get the member's service
-	var memberService *corev1.Service
-	var err error
-	const maxRetryCount = 5
-	for retryCount := 0; ; retryCount++ {
-		memberService, err = kubeclient.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
-		if err == nil {
-			break
-		}
-		if retryCount > maxRetryCount {
-			return nil, errors.Wrap(err, "failed to get memberservice")
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
 
 	// Get the pod's ip
 	pod, err := kubeclient.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
@@ -50,18 +36,57 @@ func Retrieve(ctx context.Context, name, namespace string, kubeclient kubernetes
 		return nil, errors.Wrap(err, "failed to get pod")
 	}
 
+	var staticIp string
+	if pod.Spec.HostNetwork {
+		// If we are in hostnetwork, the pod IP is already routable
+		staticIp = pod.Status.PodIP
+	} else {
+		// If we are not in host network we need to retrieve
+		// the clusterIp attached to the service in order to get a routable IP
+
+		// Get the member's service
+		var memberService *corev1.Service
+		var err error
+		const maxRetryCount = 5
+		for retryCount := 0; ; retryCount++ {
+			memberService, err = kubeclient.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
+			if err == nil {
+				break
+			}
+			if retryCount > maxRetryCount {
+				return nil, errors.Wrap(err, "failed to get memberservice")
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		staticIp = memberService.Spec.ClusterIP
+	}
+
 	return &Member{
 		Name:       name,
 		Namespace:  namespace,
 		IP:         pod.Status.PodIP,
-		StaticIP:   memberService.Spec.ClusterIP,
+		StaticIP:   staticIp,
 		Rack:       pod.Labels[naming.RackNameLabel],
 		Datacenter: pod.Labels[naming.DatacenterNameLabel],
 		Cluster:    pod.Labels[naming.ClusterNameLabel],
 	}, nil
 }
 
+func (m *Member) useHostNetwork() bool {
+	return m.IP == m.StaticIP
+}
+
 func (m *Member) GetSeeds(ctx context.Context, kubeClient kubernetes.Interface) ([]string, error) {
+
+	// If we are in Host network
+	if m.useHostNetwork() {
+		return m.GetSeedsForHostNetwork(ctx, kubeClient)
+	} else {
+		return m.GetSeedsForClusterIp(ctx, kubeClient)
+	}
+}
+
+func (m *Member) GetSeedsForClusterIp(ctx context.Context, kubeClient kubernetes.Interface) ([]string, error) {
 
 	var services *corev1.ServiceList
 	var err error
@@ -83,6 +108,34 @@ func (m *Member) GetSeeds(ctx context.Context, kubeClient kubernetes.Interface) 
 	seeds := []string{}
 	for _, svc := range services.Items {
 		seeds = append(seeds, svc.Spec.ClusterIP)
+	}
+	return seeds, nil
+}
+
+func (m *Member) GetSeedsForHostNetwork(ctx context.Context, kubeClient kubernetes.Interface) ([]string, error) {
+	var services *corev1.EndpointsList
+	var err error
+
+	sel := fmt.Sprintf("%s,%s=%s", naming.SeedLabel, naming.ClusterNameLabel, m.Cluster)
+
+	const maxRetryCount = 5
+	for retryCount := 0; ; retryCount++ {
+		services, err = kubeClient.CoreV1().Endpoints(m.Namespace).List(ctx, metav1.ListOptions{LabelSelector: sel})
+		if err == nil && len(services.Items) > 0 {
+			break
+		}
+		if retryCount > 5 {
+			return nil, errors.New(fmt.Sprintf("failed to get seeds, error: %+v, len(services): %d", err, len(services.Items)))
+		}
+		time.Sleep(1000 * time.Millisecond)
+	}
+
+	seeds := []string{}
+	for _, svc := range services.Items {
+		if len(svc.Subsets) <= 0 || len(svc.Subsets[0].Addresses) <= 0 {
+			continue
+		}
+		seeds = append(seeds, svc.Subsets[0].Addresses[0].IP)
 	}
 	return seeds, nil
 }
