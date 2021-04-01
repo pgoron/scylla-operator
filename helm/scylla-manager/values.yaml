@@ -9,6 +9,8 @@ image:
   pullPolicy: IfNotPresent
   tag: 2.2.1
 
+imagePullSecrets: []
+
 # Allows to customize Scylla Manager Controller image
 controllerImage:
   repository: scylladb
