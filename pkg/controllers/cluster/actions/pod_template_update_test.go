@@ -136,6 +136,57 @@ func TestPodTemplateUpdate_ContainerResources(t *testing.T) {
 	}
 }
 
+func TestPodTemplateUpdate_Volumes(t *testing.T) {
+	cluster := unit.NewMultiRackCluster(1)
+	rack := &cluster.Spec.Datacenter.Racks[0]
+	rack.Volumes = []corev1.Volume{{
+		Name: "extra-data",
+		VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{},
+		},
+	}}
+
+	// Build the STS from a spec without the extra volume so the action has
+	// something to reconcile.
+	staleCluster := unit.NewMultiRackCluster(1)
+	staleSts := clusterresource.StatefulSetForRack(staleCluster.Spec.Datacenter.Racks[0], staleCluster, "image")
+
+	got := executeAndGet(t, cluster, staleSts)
+
+	if v := findVolume(t, got.Spec.Template.Spec.Volumes, "extra-data"); v.EmptyDir == nil {
+		t.Fatalf("extra-data volume not propagated: %+v", v)
+	}
+}
+
+func TestPodTemplateUpdate_VolumesNoopWithDefaultedMode(t *testing.T) {
+	// Simulate the apiserver having defaulted ConfigMap/Secret defaultMode on the
+	// stored STS. The action must NOT see this as a divergence, otherwise it would
+	// spin the reconcile loop forever.
+	cluster := unit.NewMultiRackCluster(1)
+	rack := cluster.Spec.Datacenter.Racks[0]
+	rackSts := clusterresource.StatefulSetForRack(rack, cluster, "image")
+
+	mode := int32(0644)
+	for i := range rackSts.Spec.Template.Spec.Volumes {
+		src := &rackSts.Spec.Template.Spec.Volumes[i].VolumeSource
+		if src.ConfigMap != nil {
+			src.ConfigMap.DefaultMode = &mode
+		}
+		if src.Secret != nil {
+			src.Secret.DefaultMode = &mode
+		}
+	}
+
+	sub := NewPodTemplateUpdateSubAction(cluster, "image")
+	updated, err := sub.RackUpdated(rack, rackSts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated {
+		t.Fatalf("RackUpdated reported divergence purely from apiserver-defaulted volume defaultMode")
+	}
+}
+
 func TestPodTemplateUpdate_ForcesRollingUpdate(t *testing.T) {
 	// Simulate the operator crashing mid version-upgrade with the STS left on
 	// OnDelete: a template mutation alone would never roll pods, and the
@@ -180,4 +231,15 @@ func findContainer(t *testing.T, cs []corev1.Container, name string) corev1.Cont
 	}
 	t.Fatalf("container %q not found among %d containers", name, len(cs))
 	return corev1.Container{}
+}
+
+func findVolume(t *testing.T, vs []corev1.Volume, name string) corev1.Volume {
+	t.Helper()
+	for _, v := range vs {
+		if v.Name == name {
+			return v
+		}
+	}
+	t.Fatalf("volume %q not found among %d volumes", name, len(vs))
+	return corev1.Volume{}
 }

@@ -26,11 +26,12 @@ const (
 //   - Tolerations
 //   - Pod template labels (RackLabels + spec.CustomLabels)
 //   - Per-container Resources, matched by container name
+//   - Pod Volumes (operator-managed base volumes + spec.Volumes)
 //
 // Image-related fields are intentionally out of scope: SidecarUpgrade and the
-// version-upgrade action own those and run earlier in nextAction. Volumes and
-// network mode are also out of scope; they involve more invasive changes that
-// deserve dedicated handling.
+// version-upgrade action own those and run earlier in nextAction. Network mode
+// is also out of scope; it involves more invasive changes that deserve
+// dedicated handling.
 type PodTemplateUpdate struct {
 	cluster      *scyllav1.ScyllaCluster
 	sidecarImage string
@@ -60,6 +61,13 @@ func (a *PodTemplateUpdate) Update(rack scyllav1.RackSpec, sts *appsv1.StatefulS
 	if err := applyContainerResources(actualSpec.Containers, wantSpec.Containers); err != nil {
 		return errors.Wrap(err, "apply container resources")
 	}
+
+	// Replace the full Volumes list with the desired one. The apiserver does not
+	// inject volumes into the STS pod template (the ServiceAccount token volume is
+	// added to Pods, not the template), so a full replacement is safe and also
+	// supports removing volumes the user dropped from the spec. defaultMode that
+	// the apiserver fills in on read-back is reconciled away by volumesDiverge.
+	actualSpec.Volumes = deepCopyVolumes(wantSpec.Volumes)
 
 	// Force RollingUpdate so the mutation actually rolls pods. The STS may have
 	// been left in OnDelete by a previously crashed version-upgrade action; the
@@ -120,6 +128,9 @@ func managedPodTemplateDiverged(actual, desired *appsv1.StatefulSet) bool {
 	if containerResourcesDiverge(actualSpec.Containers, wantSpec.Containers) {
 		return true
 	}
+	if volumesDiverge(actualSpec.Volumes, wantSpec.Volumes) {
+		return true
+	}
 	// If a previous upgrade left the STS in OnDelete, a template mutation would
 	// not roll pods on its own. Treat that as a divergence so we converge back
 	// to RollingUpdate together with any field change.
@@ -148,6 +159,54 @@ func containerResourcesDiverge(actual, want []corev1.Container) bool {
 		}
 	}
 	return false
+}
+
+// volumesDiverge reports whether the actual and desired Volumes lists differ,
+// ignoring the volume-source defaultMode that the apiserver fills in via
+// defaulting on read-back (ConfigMap/Secret/Projected/DownwardAPI sources
+// default to 0644). Comparing those raw would flag a permanent divergence and
+// spin the reconcile loop forever, since the desired list built from the spec
+// leaves defaultMode unset. Order matters: StatefulSetForRack emits volumes in
+// a deterministic order and Update writes that same order back, so a positional
+// comparison is sufficient.
+func volumesDiverge(actual, want []corev1.Volume) bool {
+	return !apiequality.Semantic.DeepEqual(normalizeVolumes(actual), normalizeVolumes(want))
+}
+
+// deepCopyVolumes returns an independent copy of the volumes slice so mutating
+// the STS does not alias the freshly-built desired template.
+func deepCopyVolumes(in []corev1.Volume) []corev1.Volume {
+	if in == nil {
+		return nil
+	}
+	out := make([]corev1.Volume, len(in))
+	for i := range in {
+		out[i] = *in[i].DeepCopy()
+	}
+	return out
+}
+
+// normalizeVolumes returns a copy of the volumes with apiserver-defaulted
+// defaultMode fields cleared, so equality checks compare only spec-derived
+// fields. The originals are left untouched.
+func normalizeVolumes(in []corev1.Volume) []corev1.Volume {
+	out := deepCopyVolumes(in)
+	for i := range out {
+		src := &out[i].VolumeSource
+		if src.ConfigMap != nil {
+			src.ConfigMap.DefaultMode = nil
+		}
+		if src.Secret != nil {
+			src.Secret.DefaultMode = nil
+		}
+		if src.Projected != nil {
+			src.Projected.DefaultMode = nil
+		}
+		if src.DownwardAPI != nil {
+			src.DownwardAPI.DefaultMode = nil
+		}
+	}
+	return out
 }
 
 // applyContainerResources copies Resources from want into matching containers
